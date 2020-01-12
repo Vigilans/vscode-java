@@ -18,6 +18,7 @@ import { ExtensionAPI, ExtensionApiVersion } from './extension.api';
 import * as buildpath from './buildpath';
 import * as hoverAction from './hoverAction';
 import * as sourceAction from './sourceAction';
+import * as highlightingAction from './highlightingAction';
 import * as refactorAction from './refactorAction';
 import * as pasteAction from './pasteAction';
 import * as net from 'net';
@@ -167,6 +168,7 @@ export function activate(context: ExtensionContext): Promise<ExtensionAPI> {
 						advancedExtractRefactoringSupport: true,
 						moveRefactoringSupport: true,
 						clientHoverProvider: true,
+						semanticHighlightingSupport: true,
 					},
 					triggerFiles,
 				},
@@ -238,11 +240,11 @@ export function activate(context: ExtensionContext): Promise<ExtensionAPI> {
 			languageClient.registerProposedFeatures();
 			const registerHoverCommand = hoverAction.registerClientHoverProvider(languageClient, context);
 			const getDocumentSymbols: getDocumentSymbolsCommand = getDocumentSymbolsProvider(languageClient);
-
 			const snippetProvider: SnippetCompletionProvider = new SnippetCompletionProvider();
 			context.subscriptions.push(languages.registerCompletionItemProvider({ scheme: 'file', language: 'java' }, snippetProvider));
 
 			languageClient.onReady().then(() => {
+				highlightingAction.registerSemanticHighlightingProvider(languageClient, context);
 				languageClient.onNotification(StatusNotification.type, (report) => {
 					switch (report.type) {
 						case 'Started':
