@@ -1,9 +1,11 @@
 import * as vscode from "vscode";
-import { LanguageClient, VersionedTextDocumentIdentifier, NotificationType, DidOpenTextDocumentNotification } from "vscode-languageclient";
+import { LanguageClient, SemanticHighlightingNotification, SemanticHighlightingParams, SemanticHighlightingInformation } from "vscode-languageclient";
 
-export function registerSemanticHighlightingProvider(languageClient: LanguageClient, context: vscode.ExtensionContext) {
+export function registerSemanticHighlightingProvider(languageClient: LanguageClient, context: vscode.ExtensionContext, scopes: string[][]) {
+    // The parameter 'scopes' is not used here but a static map is provided instead
+    // Since current legend mechanism is conflict with the textmate scope used by protocol
 	const scopeBuilder = new SemanticScopeBuilder(SemanticScopeMap);
-	const provider = new SemanticTokensProvider(languageClient, context, scopeBuilder);
+    const provider = new SemanticTokensProvider(languageClient, context, scopeBuilder);
 	context.subscriptions.push(vscode.languages.registerSemanticTokensProvider({ language: 'java' }, provider, scopeBuilder.getLegend()));
 }
 
@@ -40,8 +42,8 @@ class SemanticTokensProvider implements vscode.SemanticTokensProvider {
 	private onDidUpdateSemanticTokens: vscode.EventEmitter<SemanticDocument> = new vscode.EventEmitter();
 
 	public constructor(private readonly client: LanguageClient, private readonly context: vscode.ExtensionContext, private scopeBuilder: SemanticScopeBuilder) {
-        client.onNotification(SemanticHighlightingNotification.type, params => this.onSemanticHighlightingNotification(params));
-        vscode.workspace.onDidChangeTextDocument(event => this.onDidChangeTextDocument(event), this, context.subscriptions);
+        client.onNotification('textDocument/semanticHighlighting', this.onSemanticHighlightingNotification.bind(this));
+        vscode.workspace.onDidChangeTextDocument(this.onDidChangeTextDocument.bind(this), this, context.subscriptions);
     }
 
 	public async provideSemanticTokens(textDocument: vscode.TextDocument, { previousResultId }: vscode.SemanticTokensRequestOptions, token: vscode.CancellationToken) {
@@ -233,34 +235,6 @@ class SemanticTokensProvider implements vscode.SemanticTokensProvider {
             tokens: this.applyEdit(baseEdit.tokens, mergedEdit),
         };
     }
-}
-
-interface SemanticHighlightingInformation {
-	/**
-	 * The zero-based line position in the text document.
-	 */
-	line: number;
-	/**
-	 * A base64 encoded string representing every single highlighted ranges in the line with its start position, length
-	 * and the "lookup table" index of of the semantic highlighting <a href="https://manual.macromates.com/en/language_grammars">
-	 * TextMate scopes</a>. If the {@code tokens} is empty or not defined, then no highlighted positions are available for the line.
-	 */
-	tokens?: string;
-}
-
-interface SemanticHighlightingParams {
-	/**
-	 * The text document that has to be decorated with the semantic highlighting information.
-	 */
-	textDocument: VersionedTextDocumentIdentifier;
-	/**
-	 * An array of semantic highlighting information.
-	 */
-	lines: SemanticHighlightingInformation[];
-}
-
-namespace SemanticHighlightingNotification {
-	export const type = new NotificationType<SemanticHighlightingParams, void>('textDocument/semanticHighlighting');
 }
 
 enum SemanticScope {

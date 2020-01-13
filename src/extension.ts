@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
 import { workspace, extensions, ExtensionContext, window, StatusBarAlignment, commands, ViewColumn, Uri, CancellationToken, TextDocumentContentProvider, WorkspaceConfiguration, languages, IndentAction, ProgressLocation, InputBoxOptions, Selection, Position, EventEmitter, OutputChannel, TextDocument } from 'vscode';
-import { ExecuteCommandParams, ExecuteCommandRequest, LanguageClient, LanguageClientOptions, RevealOutputChannelOn, Position as LSPosition, Location as LSLocation, StreamInfo, VersionedTextDocumentIdentifier, ErrorHandler, Message, ErrorAction, CloseAction, InitializationFailedHandler, DidChangeConfigurationNotification } from 'vscode-languageclient';
+import { ExecuteCommandParams, ExecuteCommandRequest, LanguageClient, LanguageClientOptions, RevealOutputChannelOn, Position as LSPosition, Location as LSLocation, StreamInfo, VersionedTextDocumentIdentifier, ErrorHandler, Message, ErrorAction, CloseAction, InitializationFailedHandler, DidChangeConfigurationNotification, ClientCapabilities, ServerCapabilities } from 'vscode-languageclient';
 import { onExtensionChange, collectJavaExtensions } from './plugin';
 import { prepareExecutable, awaitServerConnection } from './javaServerStarter';
 import { getDocumentSymbolsCommand, getDocumentSymbolsProvider } from './documentSymbols';
@@ -168,7 +168,6 @@ export function activate(context: ExtensionContext): Promise<ExtensionAPI> {
 						advancedExtractRefactoringSupport: true,
 						moveRefactoringSupport: true,
 						clientHoverProvider: true,
-						semanticHighlightingSupport: true,
 					},
 					triggerFiles,
 				},
@@ -238,13 +237,24 @@ export function activate(context: ExtensionContext): Promise<ExtensionAPI> {
 			// Create the language client and start the client.
 			languageClient = new LanguageClient('java', extensionName, serverOptions, clientOptions);
 			languageClient.registerProposedFeatures();
+			languageClient.registerFeature({ // Register semantic highlighting feature
+				fillClientCapabilities(capabilities: ClientCapabilities) {
+					capabilities.textDocument = Object.assign(capabilities.textDocument || {}, {
+						semanticHighlightingCapabilities: {
+							semanticHighlighting: true
+						}
+					});
+				},
+				initialize(capabilities: ServerCapabilities, documentSelector) {
+					highlightingAction.registerSemanticHighlightingProvider(languageClient, context, capabilities.scopes);
+				}
+			});
 			const registerHoverCommand = hoverAction.registerClientHoverProvider(languageClient, context);
 			const getDocumentSymbols: getDocumentSymbolsCommand = getDocumentSymbolsProvider(languageClient);
 			const snippetProvider: SnippetCompletionProvider = new SnippetCompletionProvider();
 			context.subscriptions.push(languages.registerCompletionItemProvider({ scheme: 'file', language: 'java' }, snippetProvider));
 
 			languageClient.onReady().then(() => {
-				highlightingAction.registerSemanticHighlightingProvider(languageClient, context);
 				languageClient.onNotification(StatusNotification.type, (report) => {
 					switch (report.type) {
 						case 'Started':
