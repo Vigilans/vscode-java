@@ -17,9 +17,11 @@ interface SemanticToken {
 
 type SemanticTokens = Map<number, SemanticToken[]>; // Group tokens by line
 
+type SemanticShift = { range: vscode.Range; shift: number };
+
 interface SemanticEdit {
     version: number;
-    shifts: { range: vscode.Range; shift: number; }[]; // Lines to shift back or forward
+    shifts: SemanticShift[]; // Lines to shift back or forward
     tokens: SemanticTokens; // Lines to replace with new tokens
 }
 
@@ -74,11 +76,10 @@ class SemanticTokensProvider implements vscode.SemanticTokensProvider {
     private onDidChangeTextDocument({ document: textDocument, contentChanges }: vscode.TextDocumentChangeEvent) {
         const document = this.semanticDocuments.get(textDocument.uri.toString());
         if (document) { // If a corresponding semantic document is found, fix its range
-            const edit = this.ensureSemanticEdit(document, textDocument.version);
             for (const { range, text } of contentChanges) {
                 const shift = text.split(/\r|\n|\r\n/).length - 1 - (range.end.line - range.start.line);
                 if (shift !== 0) {
-                    edit.shifts.push({ range, shift });
+                    this.ensureSemanticEdit(document, textDocument.version).shifts.push({ range, shift });
                 }
             }
         }
@@ -93,11 +94,15 @@ class SemanticTokensProvider implements vscode.SemanticTokensProvider {
 		return document;
     }
 
-    private ensureSemanticEdit(document: SemanticDocument, version: number): SemanticEdit {
-        if (document.semanticEdits[document.semanticEdits.length - 1]?.version !== version) {
-            document.semanticEdits.push({ version, shifts: [], tokens: new Map() });
+    private ensureSemanticEdit({ semanticEdits }: SemanticDocument, version: number): SemanticEdit {
+        let index = semanticEdits.findIndex(edit => edit.version >= version);
+        if (index === -1) { // version is latest, push to end of edits
+            index = semanticEdits.length;
         }
-        return document.semanticEdits[document.semanticEdits.length - 1];
+        if (semanticEdits[index]?.version !== version) { // edit does not exist, create one
+            semanticEdits.splice(index, 0, { version, shifts: [], tokens: new Map() });
+        }
+        return semanticEdits[index];
     }
 
 	private decodeTokens(lines: SemanticHighlightingInformation[]): SemanticTokens {
@@ -138,7 +143,7 @@ class SemanticTokensProvider implements vscode.SemanticTokensProvider {
         }
     }
 
-    private flushEdits(document: SemanticDocument, targetVersion: number) {
+    private flushEdits2(document: SemanticDocument, targetVersion: number) {
         while (document.currentVersion < targetVersion) {
             const newEdit = document.semanticEdits.shift();
             const newTokens = new Map<number, SemanticToken[]>();
@@ -162,6 +167,71 @@ class SemanticTokensProvider implements vscode.SemanticTokensProvider {
         // Note: builder can only accept sorted tokens
         // Line token is already sorted when decoding tokens, sort line sorting is needed here
         document.semanticTokens = new Map(Array.from(document.semanticTokens).sort((a, b) => a[0] - b[0]));
+    }
+
+    private flushEdits(document: SemanticDocument, targetVersion: number) {
+        if (document.currentVersion >= targetVersion) {
+            return; // Document's current tokens is already newly enough
+        }
+        // Apply at least one edits until edit's version is newly enough for target version
+        const pendingEdits: SemanticEdit[] = [];
+        for (const edit of document.semanticEdits) {
+            pendingEdits.push(edit);
+            if (edit.version > targetVersion) {
+                break;
+            }
+        }
+        // Right fold the edits to become one merged edit
+        const mergedEdit = pendingEdits.reduceRight(this.mergeEdit.bind(this));
+        document.semanticTokens = this.applyEdit(document.semanticTokens, mergedEdit);
+        document.currentVersion = mergedEdit.version;
+        document.semanticEdits = document.semanticEdits.slice(pendingEdits.length);
+
+        // TODO: Then we can use the merged edit to generate vscode.SemanticTokensEdit[] now.
+    }
+
+    private applyEdit(tokens: SemanticTokens, edit: SemanticEdit): SemanticTokens {
+        const newTokens = new Map<number, SemanticToken[]>();
+        tokens.forEach((tokens, line) => { // Apply line shifts edit
+            let newLine = line;
+            for (const { range, shift } of edit.shifts) {
+                if (range.end.line < line) {
+                    newLine += shift; // Line is affected by edit, shift it
+                } else if (range.start.line < line) {
+                    return; // Line is directly in the edit, discard it
+                }
+            }
+            newTokens.set(newLine, tokens);
+        });
+        edit.tokens.forEach((tokens, line) => { // Apply new tokens edit
+            newTokens.set(line, tokens);
+        });
+        // Note: builder can only accept sorted tokens
+        // Line token is already sorted when decoding tokens, sort line sorting is needed here
+        return new Map(Array.from(newTokens).sort(([aLine, ], [bLine, ]) => aLine - bLine));
+    }
+
+    private mergeEdit(mergedEdit: SemanticEdit, baseEdit: SemanticEdit): SemanticEdit {
+        const newShifts = baseEdit.shifts;
+        for (const { range, shift } of mergedEdit.shifts) {
+            let newStart = range.start.line;
+            let newEnd = range.end.line;
+            for (const base of baseEdit.shifts) {
+                if (base.range.end.line < range.start.line) {
+                    newStart -= base.shift;
+                }
+                if (base.range.end.line < range.end.line) {
+                    newEnd -= base.shift;
+                }
+            }
+            const newRange = new vscode.Range(range.start.with(newStart), range.end.with(newEnd));
+            newShifts.push({ range: newRange, shift });
+        }
+        return {
+            version: mergedEdit.version,
+            shifts: newShifts,
+            tokens: this.applyEdit(baseEdit.tokens, mergedEdit),
+        };
     }
 }
 
